@@ -80,10 +80,10 @@ def extract_blog_text(url):
     soup = BeautifulSoup(response.text, "lxml")
 
     # ── Step 1: Get Page Title ──────────────────────────────────────────────
-    title_tag = soup.find("title")
+    title_tag  = soup.find("title")
     page_title = title_tag.get_text(strip=True) if title_tag else "Untitled"
 
-    # ── Step 2: Remove EVERYTHING that is NOT blog content ─────────────────
+    # ── Step 2: Remove ALL non-content tags ────────────────────────────────
     noise_tags = [
         "script", "style", "img", "picture", "video", "audio",
         "source", "track", "iframe", "embed", "object", "canvas",
@@ -96,6 +96,7 @@ def extract_blog_text(url):
         tag.decompose()
 
     # ── Step 3: Remove UI elements by class/id keywords ────────────────────
+    # FIX: Check element is not None and is a Tag before calling .get()
     ui_keywords = [
         "nav", "navbar", "navigation", "menu", "sidebar", "header",
         "footer", "banner", "cookie", "popup", "modal", "overlay",
@@ -107,58 +108,80 @@ def extract_blog_text(url):
         "search", "login", "signup", "cart", "checkout", "rating",
         "review", "feedback", "table-of-contents", "toc"
     ]
+
     for element in soup.find_all(True):
-        el_id = element.get("id", "").lower()
-        el_class = " ".join(element.get("class", [])).lower()
-        combined = el_id + " " + el_class
-        if any(kw in combined for kw in ui_keywords):
-            element.decompose()
+        try:
+            # ✅ FIX: Guard against NoneType and NavigableString
+            if element is None:
+                continue
+            if not hasattr(element, 'get'):
+                continue
+
+            el_id    = element.get("id") or ""
+            el_class = element.get("class") or []
+
+            # el_class can be a list or a string — normalize to string
+            if isinstance(el_class, list):
+                el_class = " ".join(el_class)
+
+            combined = (el_id + " " + el_class).lower()
+
+            if any(kw in combined for kw in ui_keywords):
+                element.decompose()
+
+        except Exception:
+            # Skip any element that causes issues
+            continue
 
     # ── Step 4: Find the main blog content container ────────────────────────
     main_content = (
-        soup.find("article") or
-        soup.find("main") or
-        soup.find(attrs={"role": "main"}) or
+        soup.find("article")                                        or
+        soup.find("main")                                           or
+        soup.find(attrs={"role": "main"})                           or
         soup.find("div", class_=re.compile(
             r'(post|blog|article|content|entry|body|text|story)',
             re.IGNORECASE
-        )) or
+        ))                                                          or
         soup.find("div", id=re.compile(
             r'(post|blog|article|content|entry|body|text|story)',
             re.IGNORECASE
-        )) or
+        ))                                                          or
         soup.body
     )
 
+    # ── Fallback if nothing found ───────────────────────────────────────────
+    if main_content is None:
+        main_content = soup
+
     # ── Step 5: Extract clean text blocks ───────────────────────────────────
     content = []
-    seen = set()
+    seen    = set()
 
     tags_to_extract = ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote"]
 
     for element in main_content.find_all(tags_to_extract):
-        text = element.get_text(separator=" ", strip=True)
-        text = re.sub(r'\s+', ' ', text).strip()
+        try:
+            text = element.get_text(separator=" ", strip=True)
+            text = re.sub(r'\s+', ' ', text).strip()
 
-        # Skip if:
-        if not text:                          # Empty
-            continue
-        if len(text) < 20:                    # Too short (likely UI label)
-            continue
-        if text in seen:                      # Duplicate
-            continue
-        if re.match(r'^[\W\d\s]+$', text):   # Only symbols/numbers
-            continue
-        if text.startswith("©"):             # Copyright line
-            continue
-        if re.match(r'^https?://', text):    # Raw URL line
-            continue
+            if not text:                           # Empty
+                continue
+            if len(text) < 20:                     # Too short
+                continue
+            if text in seen:                       # Duplicate
+                continue
+            if re.match(r'^[\W\d\s]+$', text):    # Symbols/numbers only
+                continue
+            if text.startswith("©"):              # Copyright
+                continue
+            if re.match(r'^https?://', text):     # Raw URL
+                continue
 
-        seen.add(text)
-        content.append({
-            "tag": element.name,
-            "text": text
-        })
+            seen.add(text)
+            content.append({"tag": element.name, "text": text})
+
+        except Exception:
+            continue
 
     return page_title, content
 
@@ -187,8 +210,8 @@ def build_docx(page_title, content, url):
     src_para = doc.add_paragraph()
     src_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     src_run = src_para.add_run(f"Source: {url}")
-    src_run.font.size    = Pt(9)
-    src_run.font.italic  = True
+    src_run.font.size      = Pt(9)
+    src_run.font.italic    = True
     src_run.font.color.rgb = RGBColor(0x75, 0x75, 0x75)
 
     doc.add_paragraph()  # Spacer
@@ -225,7 +248,7 @@ def build_docx(page_title, content, url):
     footer_para.text = f"Transcribed by URL Transcriber  |  {url}"
     footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     if footer_para.runs:
-        footer_para.runs[0].font.size = Pt(8)
+        footer_para.runs[0].font.size      = Pt(8)
         footer_para.runs[0].font.color.rgb = RGBColor(0xAA, 0xAA, 0xAA)
 
     # ── Save ──
@@ -243,7 +266,7 @@ def is_valid_url(url):
     try:
         r = urlparse(url)
         return all([r.scheme in ("http", "https"), r.netloc])
-    except:
+    except Exception:
         return False
 
 
@@ -255,7 +278,7 @@ def url_to_filename(url):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  APP UI — Minimal, Input + Download Only
+#  APP UI — Minimal: Input + Download Only
 # ════════════════════════════════════════════════════════════════════════════
 
 st.markdown("## 📄 URL Text Transcriber")
